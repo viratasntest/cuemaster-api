@@ -36,6 +36,25 @@ export interface Session {
   expiresAt: string;
 }
 
+export type SocialProvider = 'google' | 'facebook';
+
+export interface SocialLoginInput {
+  provider: SocialProvider;
+  /** Google: an OpenID Connect id_token. Facebook: a Graph API access_token.
+   * Verified server-side — see docs/BACKEND.md's Social Login section. */
+  token: string;
+  /** Only used if this is the first time this provider identity is seen and a
+   * new account needs to be created; ignored if one already exists. */
+  role: UserRole;
+}
+
+// Note: cuemaster-ui's mirror of this file also has an `AvatarUpload`
+// interface (`{ uri, fileName, mimeType }`) — that's the on-device "picked
+// file, ready to upload" shape its client code builds a FormData from. There's
+// nothing to mirror server-side: this API receives avatar uploads as an
+// actual multipart file (`Express.Multer.File`, see routes/users.ts), not
+// that TS shape.
+
 export interface PlayerSignupInput {
   email: string;
   password: string;

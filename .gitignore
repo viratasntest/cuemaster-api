@@ -7,5 +7,8 @@ npm-debug.log*
 # scripts/dev-mongo.sh's project-local database
 .mongo-data/
 
+# Uploaded avatar files (src/lib/uploads.ts) — runtime data, not source.
+/uploads/
+
 .DS_Store
 coverage/

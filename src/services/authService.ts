@@ -3,8 +3,9 @@ import { hashPassword, verifyPassword } from '../lib/password';
 import { signAccessToken, signAccessTokenUntil } from '../lib/jwt';
 import { toAppUser } from '../lib/mappers';
 import { ApiError } from '../lib/errors';
+import { verifySocialToken, type SocialProvider } from '../lib/socialAuth';
 import { env } from '../config/env';
-import type { AppUser, ClubSignupInput, LoginInput, PlayerSignupInput, Session } from '../types';
+import type { AppUser, ClubSignupInput, LoginInput, PlayerSignupInput, Session, UserRole } from '../types';
 
 async function createSessionForUser(user: AppUser): Promise<Session> {
   const expiresAt = new Date(Date.now() + env.sessionLengthDays * 24 * 60 * 60 * 1000);
@@ -13,6 +14,23 @@ async function createSessionForUser(user: AppUser): Promise<Session> {
   });
   const token = signAccessToken({ sub: user.id, role: user.role, jti: session.id });
   return { user, token, expiresAt: expiresAt.toISOString() };
+}
+
+/** Ported from cuemaster-ui's mockAuthService.ts (`generateUniqueUsername`) —
+ * the algorithm must match exactly per docs/BACKEND.md's Social Login
+ * section, since usernames are user-visible handles a player might notice
+ * either app assigned. Already lowercase (`replace` only keeps [a-z0-9_]),
+ * consistent with the plain signup path's canonical-lowercase usernames. */
+async function generateUniqueUsername(seed: string): Promise<string> {
+  const base = seed.toLowerCase().replace(/[^a-z0-9_]/g, '').slice(0, 20) || 'player';
+  let candidate = base;
+  let suffix = 1;
+  // eslint-disable-next-line no-await-in-loop -- small, bounded, sequential by nature
+  while (await prisma.user.findUnique({ where: { username: candidate } })) {
+    candidate = `${base}${suffix}`;
+    suffix += 1;
+  }
+  return candidate;
 }
 
 export const authService = {
@@ -57,9 +75,71 @@ export const authService = {
     const row = await prisma.user.findUnique({ where: { email: input.email } });
     if (!row) throw ApiError.unauthorized('No account found with that email.');
 
+    // A social-only account (see loginWithSocial below) has no passwordHash —
+    // fail with the same generic message as a wrong password, per
+    // docs/BACKEND.md, rather than a 500 or a message that leaks which
+    // accounts are social-only.
+    if (!row.passwordHash) throw ApiError.unauthorized('Incorrect email or password.');
+
     const ok = await verifyPassword(input.password, row.passwordHash);
     if (!ok) throw ApiError.unauthorized('Incorrect email or password.');
 
+    return createSessionForUser(toAppUser(row));
+  },
+
+  /** POST /auth/social/:provider — see docs/BACKEND.md's Social Login
+   * section for the full find-or-create logic this implements: link an
+   * existing linked identity, else link by email, else create a new
+   * account. `token` is verified server-side (src/lib/socialAuth.ts) —
+   * never trust the client's own claim of who it is. */
+  async loginWithSocial(provider: SocialProvider, token: string, role: UserRole): Promise<Session> {
+    const profile = await verifySocialToken(provider, token);
+
+    const linked = await prisma.socialIdentity.findUnique({
+      where: { provider_providerId: { provider, providerId: profile.providerId } },
+    });
+    if (linked) {
+      const row = await prisma.user.findUnique({ where: { id: linked.userId } });
+      if (row) return createSessionForUser(toAppUser(row));
+      // Identity row survived a since-deleted user — fall through and treat
+      // this as a fresh sign-in rather than erroring; shouldn't normally
+      // happen since there's no user-delete endpoint today.
+    }
+
+    // No linked identity yet — if an account with this email already exists
+    // (e.g. they originally signed up with a password), link this provider
+    // to it rather than creating a duplicate account.
+    const existingByEmail = profile.email ? await prisma.user.findUnique({ where: { email: profile.email } }) : null;
+    if (existingByEmail) {
+      await prisma.socialIdentity.create({
+        data: { userId: existingByEmail.id, provider, providerId: profile.providerId },
+      });
+      return createSessionForUser(toAppUser(existingByEmail));
+    }
+
+    const email = profile.email ?? `${provider}-${profile.providerId}@no-email.cuemaster.app`;
+    const row =
+      role === 'club'
+        ? await prisma.user.create({
+            data: {
+              role: 'club',
+              email,
+              displayName: profile.name,
+              clubName: profile.name,
+              avatarUrl: profile.avatarUrl,
+              // passwordHash omitted — social-only account, see schema comment.
+            },
+          })
+        : await prisma.user.create({
+            data: {
+              role: 'player',
+              email,
+              displayName: profile.name,
+              username: await generateUniqueUsername(profile.name || email.split('@')[0]),
+              avatarUrl: profile.avatarUrl,
+            },
+          });
+    await prisma.socialIdentity.create({ data: { userId: row.id, provider, providerId: profile.providerId } });
     return createSessionForUser(toAppUser(row));
   },
 

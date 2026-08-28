@@ -3,9 +3,10 @@
 The real backend for [CueMaster](../cuemaster-ui) — implements every endpoint
 and realtime event in [`docs/BACKEND.md`](docs/BACKEND.md) (copied here
 verbatim from the app repo; treat it as the contract this service must
-satisfy). Point `cuemaster-ui`'s `src/services/index.ts` at REST/socket
-clients built against this instead of the mock, and no screen or hook in the
-app needs to change.
+satisfy). `cuemaster-ui` already has REST/socket clients (`src/services/rest`,
+`src/services/socket`) built against this API — set `EXPO_PUBLIC_API_URL` to
+this server's URL there to use it instead of the on-device mock; no screen or
+hook needs to change either way.
 
 **Stack:** Node.js + TypeScript, Express (REST), Socket.IO (realtime),
 Prisma + MongoDB (persistence), JWT + bcrypt (auth), Zod (validation).
@@ -50,7 +51,12 @@ Verify it's up: `curl localhost:4000/health` → `{"ok":true}`.
 
 See [`.env.example`](.env.example) for the full list with explanations
 (`DATABASE_URL`, `PORT`, `CORS_ORIGIN`, `JWT_SECRET`, `SESSION_LENGTH_DAYS`,
-`BCRYPT_ROUNDS`).
+`BCRYPT_ROUNDS`, plus Social Login's `GOOGLE_CLIENT_IDS`/`FACEBOOK_APP_ID`/
+`FACEBOOK_APP_SECRET` and Avatar Upload's `PUBLIC_BASE_URL`/`UPLOAD_DIR`/
+`AVATAR_MAX_BYTES`). Social Login's provider-specific vars are optional —
+leaving one unset makes that provider's endpoint return a clear "not
+configured" error rather than failing at startup; Avatar Upload always works,
+using sensible defaults.
 
 ## Project layout
 
@@ -62,8 +68,9 @@ src/scoring/                Ported verbatim from cuemaster-ui/src/utils/{scoring
 src/services/                DB-backed business logic (one file per domain)
 src/routes/                  Express route handlers → thin wrappers over services/
 src/realtime/socketServer.ts  Socket.IO server: auth, rooms, match/invite actions
-src/middleware/               auth (bearer→session), validation (zod), error handling
-src/lib/                      prisma client, jwt, password hashing, mappers, error types
+src/middleware/               auth (bearer→session), validation (zod), avatar upload (multer), error handling
+src/lib/                      prisma client, jwt, password hashing, social-token verification, uploads, mappers, error types
+uploads/                       Avatar files (gitignored — runtime data, see src/lib/uploads.ts)
 test/                          Vitest tests for the scoring/stats port (not yet run — see below)
 ```
 
@@ -113,18 +120,34 @@ explicitly flags as "don't port as-is" needed a concrete decision here:
   `socket.on('invite:new', handler)` / `socket.on('match:updated', handler)`
   directly, since Socket.IO rooms already guarantee a socket only receives
   events emitted to rooms it has joined (`user:<id>`, `match:<id>`).
-- **This repo is the server only.** Per `docs/BACKEND.md`'s step 2/3, the
-  next step is adding `src/services/rest/*.ts` and
-  `src/services/socket/realtimeService.ts` in `cuemaster-ui` implementing the
-  same `AuthService`/`MatchService`/`RealtimeService`/etc. interfaces against
-  this API, then flipping `src/services/index.ts` over — that UI-side adapter
-  isn't part of this repo.
+- **This repo is the server only** — `cuemaster-ui`'s `src/services/rest/*.ts`
+  and `src/services/socket/socketRealtimeService.ts` (built against this API,
+  field-for-field) are the client half of the contract and live in that repo,
+  switched on via `EXPO_PUBLIC_API_URL`.
+- **Google/Facebook sign-in verification** uses the doc's "Simpler" option —
+  Google's `tokeninfo` endpoint and Facebook's `debug_token` + `/me`, both a
+  network round-trip rather than an offline JWKS check — since the doc calls
+  that "fine at this scale". See `src/lib/socialAuth.ts` for the swap path to
+  `google-auth-library`'s offline verification if you want it later.
+- **Avatar storage** is local disk served statically (`app.use('/uploads',
+  express.static(...))`, per the doc's "simplest for local dev" option) —
+  `src/lib/uploads.ts` isolates the storage calls so swapping to S3/Cloudinary
+  later only touches that one file, not the route/service contract. Note
+  `PUBLIC_BASE_URL` must be a URL a *phone* can reach, not "localhost" — see
+  `.env.example`.
 
 ## Testing
 
 `test/scoring.test.ts` and `test/stats.test.ts` cover the ported scoring
 engine and stats derivation (`npm test`, via Vitest) — written this pass but
-not yet run/verified; the REST + Socket.IO flows (signup, login, friend
-requests with authorization checks, solo matches, and the full
-invite→accept→pot→foul→endFrame→stats pipeline over real sockets) *were*
-manually verified end-to-end against a live local MongoDB during development.
+not yet run/verified. Manually verified end-to-end against a live MongoDB
+during development: signup, login, friend requests with authorization checks,
+solo matches, and the full invite→accept→pot→foul→endFrame→stats pipeline
+over real sockets; avatar upload (real file round-tripped byte-for-byte
+through a real HTTP multipart request, old-file cleanup on re-upload, and the
+wrong-type/oversized/wrong-field/unauthenticated rejection paths); and Social
+Login's verification failure paths against Google's and Facebook's real
+endpoints (not-configured, and a garbage token correctly rejected by each
+provider) — the account-creation/linking success path isn't verifiable
+without real OAuth app credentials and a live login flow, but mirrors the
+already-proven mock implementation's logic exactly.

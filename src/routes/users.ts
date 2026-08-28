@@ -1,7 +1,9 @@
 import { Router } from 'express';
 import { userService } from '../services/userService';
 import { validateBody } from '../middleware/validate';
+import { avatarUpload } from '../middleware/avatarUpload';
 import { asyncHandler } from '../lib/asyncHandler';
+import { ApiError } from '../lib/errors';
 import { updateProfileSchema } from '../schemas';
 
 export const usersRouter = Router();
@@ -13,6 +15,16 @@ usersRouter.patch(
   validateBody(updateProfileSchema),
   asyncHandler(async (req, res) => {
     const user = await userService.updateProfile(req.auth!.userId, req.body);
+    res.status(200).json(user);
+  }),
+);
+
+usersRouter.post(
+  '/me/avatar',
+  avatarUpload,
+  asyncHandler(async (req, res) => {
+    if (!req.file) throw ApiError.badRequest('No avatar file provided — expected a multipart field named "avatar".');
+    const user = await userService.saveAvatar(req.auth!.userId, req.file.filename);
     res.status(200).json(user);
   }),
 );

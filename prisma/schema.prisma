@@ -23,10 +23,15 @@ datasource db {
 // since a user is exactly one role for life and nothing needs to query across
 // both shapes uniformly beyond id/email/displayName/avatarUrl/createdAt.
 model User {
-  id           String   @id @default(auto()) @map("_id") @db.ObjectId
-  role         String // 'player' | 'club'
-  email        String   @unique
-  passwordHash String
+  id   String @id @default(auto()) @map("_id") @db.ObjectId
+  role String // 'player' | 'club'
+  email        String  @unique
+  // Optional: a social-only account (see SocialIdentity below) has no
+  // password and can only log in via a linked provider — per
+  // docs/BACKEND.md's Social Login section. login() must reject such an
+  // account with the normal "incorrect email or password" rather than
+  // crashing on a null hash (see services/authService.ts).
+  passwordHash String?
   displayName  String
   avatarUrl    String?
   createdAt    DateTime @default(now())
@@ -42,6 +47,20 @@ model User {
   phone    String?
 
   @@index([role])
+}
+
+// Links a Google/Facebook identity to a User — see docs/BACKEND.md's Social
+// Login section. `(provider, providerId)` is the provider's own stable
+// per-account id (Google's `sub`, Facebook's `id`), not email, since a
+// provider identity's email can change or be absent.
+model SocialIdentity {
+  id         String @id @default(auto()) @map("_id") @db.ObjectId
+  userId     String
+  provider   String // 'google' | 'facebook'
+  providerId String
+
+  @@unique([provider, providerId])
+  @@index([userId])
 }
 
 // Backs GET /auth/me and logout revocation. The JWT carries this row's id as

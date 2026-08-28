@@ -30,6 +30,12 @@ export const loginSchema = z.object({
   password: z.string().min(1),
 });
 
+// `provider` comes from the URL (:provider), not the body — see routes/auth.ts.
+export const socialLoginSchema = z.object({
+  token: z.string().min(1),
+  role: z.enum(['player', 'club']),
+});
+
 export const updateProfileSchema = z.object({
   displayName: z.string().trim().min(1).max(60).optional(),
   avatarUrl: z.string().trim().url().optional(),

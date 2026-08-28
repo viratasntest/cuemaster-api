@@ -3,7 +3,9 @@ import { authService } from '../services/authService';
 import { requireAuth } from '../middleware/auth';
 import { validateBody } from '../middleware/validate';
 import { asyncHandler } from '../lib/asyncHandler';
-import { clubSignupSchema, loginSchema, playerSignupSchema } from '../schemas';
+import { ApiError } from '../lib/errors';
+import { clubSignupSchema, loginSchema, playerSignupSchema, socialLoginSchema } from '../schemas';
+import type { SocialProvider } from '../lib/socialAuth';
 
 export const authRouter = Router();
 
@@ -30,6 +32,21 @@ authRouter.post(
   validateBody(loginSchema),
   asyncHandler(async (req, res) => {
     const session = await authService.login(req.body);
+    res.status(200).json(session);
+  }),
+);
+
+const SOCIAL_PROVIDERS: SocialProvider[] = ['google', 'facebook'];
+
+authRouter.post(
+  '/social/:provider',
+  validateBody(socialLoginSchema),
+  asyncHandler(async (req, res) => {
+    const provider = req.params.provider as SocialProvider;
+    if (!SOCIAL_PROVIDERS.includes(provider)) {
+      throw ApiError.badRequest(`Unknown provider "${req.params.provider}" — expected "google" or "facebook".`);
+    }
+    const session = await authService.loginWithSocial(provider, req.body.token, req.body.role);
     res.status(200).json(session);
   }),
 );
