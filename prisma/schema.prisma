@@ -1,0 +1,116 @@
+// CueMaster backend schema — implements the data model in docs/BACKEND.md,
+// backed by MongoDB.
+//
+// Collections reference each other by plain string id fields (requesterId,
+// fromUserId, matchId, ...) rather than Prisma `@relation`s — Mongo has no
+// enforced foreign keys, cascade deletes would have to be emulated in app
+// code, and nothing in this contract ever needs to traverse the object graph
+// (every read is "find rows where field = this user's id", exactly like the
+// mock's `mockDb.query` predicate scans). Keeping references as plain scalars
+// is the idiomatic Mongo shape and sidesteps that complexity entirely.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+// AppUser = PlayerProfile | ClubProfile, discriminated by `role`. Kept as one
+// collection with role-specific fields left null rather than two collections,
+// since a user is exactly one role for life and nothing needs to query across
+// both shapes uniformly beyond id/email/displayName/avatarUrl/createdAt.
+model User {
+  id           String   @id @default(auto()) @map("_id") @db.ObjectId
+  role         String // 'player' | 'club'
+  email        String   @unique
+  passwordHash String
+  displayName  String
+  avatarUrl    String?
+  createdAt    DateTime @default(now())
+
+  // player-only
+  username   String? @unique
+  bio        String?
+  homeClubId String?
+
+  // club-only
+  clubName String?
+  address  String?
+  phone    String?
+
+  @@index([role])
+}
+
+// Backs GET /auth/me and logout revocation. The JWT carries this row's id as
+// its `jti` claim — auth middleware verifies the signature *and* that the
+// session hasn't been revoked/expired, so logout actually invalidates a token
+// instead of just discarding it client-side. Mirrors AuthSession in the mock.
+model Session {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId    String
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+
+  @@index([userId])
+}
+
+model MatchType {
+  // App-supplied slug ids ("standard-snooker", ...), not an ObjectId.
+  id           String  @id @map("_id")
+  name         String
+  description  String
+  redBallCount Int
+  framesToWin  Int
+  isSolo       Boolean @default(false)
+}
+
+model Friendship {
+  id          String    @id @default(auto()) @map("_id") @db.ObjectId
+  requesterId String
+  addresseeId String
+  status      String // 'pending' | 'accepted' | 'declined'
+  createdAt   DateTime  @default(now())
+  respondedAt DateTime?
+
+  @@index([requesterId])
+  @@index([addresseeId])
+}
+
+model MatchInvite {
+  id          String    @id @default(auto()) @map("_id") @db.ObjectId
+  matchTypeId String
+  fromUserId  String
+  toUserId    String
+  status      String // 'pending' | 'accepted' | 'declined' | 'cancelled' | 'expired'
+  createdAt   DateTime  @default(now())
+  respondedAt DateTime?
+  matchId     String?
+
+  @@index([toUserId, status])
+  @@index([fromUserId, status])
+}
+
+// `frames` (Frame[]) and `frameWins`/`playerIds` are stored as JSON
+// (BSON-native via Prisma's Json type) rather than normalized collections —
+// Match.frames is always read/written as a whole via the pure scoring
+// functions in src/scoring/scoring.ts (ported verbatim from the app), and the
+// realtime layer always broadcasts the full snapshot (see docs/BACKEND.md),
+// so there's no query need to reach inside a frame at the DB layer. Keeps the
+// port of the scoring engine exact, and maps naturally onto a Mongo document.
+model Match {
+  id          String    @id @default(auto()) @map("_id") @db.ObjectId
+  matchTypeId String
+  status      String // 'in_progress' | 'completed' | 'cancelled'
+  playerIds   Json // string[]
+  frames      Json // Frame[]
+  frameWins   Json // Record<string, number>
+  winnerId    String?
+  createdAt   DateTime  @default(now())
+  startedAt   DateTime?
+  completedAt DateTime?
+
+  @@index([status])
+}

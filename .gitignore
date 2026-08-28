@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.env
+*.log
+npm-debug.log*
+
+# scripts/dev-mongo.sh's project-local database
+.mongo-data/
+
+.DS_Store
+coverage/
